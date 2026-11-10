@@ -1,0 +1,59 @@
+name: database
+
+on:
+  pull_request:
+    paths:
+      - "db/**"
+      - "scripts/**"
+      - "docker-compose.yml"
+      - ".github/workflows/database.yml"
+  push:
+    branches: [main]
+    paths:
+      - "db/**"
+      - "scripts/**"
+      - "docker-compose.yml"
+      - ".github/workflows/database.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backup-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint shell scripts
+        run: shellcheck --exclude=SC1090,SC1091 scripts/*.sh db/docker-entrypoint/init.sh
+
+      - name: Start database
+        run: docker compose up -d --wait
+
+      - name: Check seed volume
+        run: |
+          count="$(docker compose exec -T db psql -U app -d hotel -A -t -c 'SELECT count(*) FROM hotel_bookings')"
+          echo "hotel_bookings rows: ${count}"
+          test "${count}" -ge 100
+
+      - name: Backup
+        run: ./scripts/backup.sh
+
+      - name: Restore and verify
+        run: ./scripts/restore.sh
+
+      - name: Query plan
+        run: |
+          ./scripts/explain.sh with-index | tee explain.txt
+          grep -E "Index (Only )?Scan|Bitmap Index Scan" explain.txt
+
+      - name: Database logs
+        if: failure()
+        run: docker compose logs db
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

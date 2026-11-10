@@ -1,0 +1,113 @@
+name: terraform-plan
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/terraform-plan.yml"
+
+concurrency:
+  group: terraform-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.9.8"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  terraform:
+    name: plan (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    defaults:
+      run:
+        working-directory: infra/envs/${{ matrix.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff ../..
+
+      - name: terraform init
+        run: terraform init -backend=false
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - name: terraform plan
+        run: |
+          terraform plan -refresh=false -lock=false -no-color -var plan_only=true -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+
+      - name: Publish plan to job summary
+        run: |
+          {
+            echo "### Terraform plan: ${{ matrix.environment }}"
+            echo '<details><summary>Show plan</summary>'
+            echo
+            echo '````terraform'
+            head -c 60000 plan.txt
+            echo
+            echo '````'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: infra/envs/${{ matrix.environment }}/plan.txt
+          retention-days: 14
+
+      - name: Comment plan on pull request
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        env:
+          ENVIRONMENT: ${{ matrix.environment }}
+          PLAN_FILE: infra/envs/${{ matrix.environment }}/plan.txt
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = `<!-- terraform-plan-${process.env.ENVIRONMENT} -->`;
+            const limit = 60000;
+            let plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8');
+            if (plan.length > limit) {
+              plan = plan.slice(0, limit) + '\n... truncated, download the workflow artifact for the full plan';
+            }
+            const fence = '`'.repeat(4);
+            const body = [
+              marker,
+              `### Terraform plan: \`${process.env.ENVIRONMENT}\``,
+              '<details><summary>Show plan</summary>',
+              '',
+              `${fence}terraform`,
+              plan,
+              fence,
+              '',
+              '</details>',
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((comment) => comment.body && comment.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
