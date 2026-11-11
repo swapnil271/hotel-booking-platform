@@ -21,7 +21,7 @@ No AWS account is needed to review this repository.
 - [Design decisions](#design-decisions)
 - [Known limitations](#known-limitations)
 
-## Architecture
+## Architecture ##
 
 ```
                      Internet
