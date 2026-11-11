@@ -38,3 +38,4 @@ fi
 log "backup complete: ${backup_file}"
 log "size: $(wc -c < "${backup_file}" | tr -d ' ') bytes"
 cat "${manifest_file}"
+
